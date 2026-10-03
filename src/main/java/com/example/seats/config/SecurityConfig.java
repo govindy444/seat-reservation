@@ -42,6 +42,7 @@ public class SecurityConfig {
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/actuator/health/**", "/actuator/prometheus", "/actuator/info").permitAll()
                 .requestMatchers(HttpMethod.POST, "/auth/token").permitAll()
+                .requestMatchers(HttpMethod.GET, "/", "/dashboard", "/dashboard.html", "/dashboard/stats").permitAll()
                 .requestMatchers(HttpMethod.GET, "/shows/*").permitAll()
                 .requestMatchers(HttpMethod.POST, "/shows").hasAuthority("SCOPE_admin")
                 .requestMatchers("/error").permitAll()

@@ -106,6 +106,22 @@ class ObservabilityTest {
     }
 
     @Test
+    void dashboardIsPublicAndStatsMatchRegistry() {
+        assertThat(api.get("/dashboard", null).status()).isEqualTo(200);
+        assertThat(api.get("/dashboard", null).body()).contains("Seat reservation");
+        String show = api.createShow("""
+                {"name":"dash","seats":["D1","D2"],"price_paise":100}""");
+        api.reserve(show, api.token("d-" + UUID.randomUUID()), UUID.randomUUID().toString(), "D1");
+        metrics.refreshSeatGauges();
+
+        var stats = api.get("/dashboard/stats", null);
+        assertThat(stats.status()).isEqualTo(200);
+        assertThat(stats.body()).contains("\"confirmed\":" + counter("reservations.confirmed"));
+        assertThat(stats.body()).contains("\"show_id\":\"" + show + "\"", "\"name\":\"dash\"",
+                "\"available\":1", "\"confirmed\":1", "\"capacity\":2");
+    }
+
+    @Test
     void readinessIncludesDatabaseProbe() {
         var r = api.get("/actuator/health/readiness", null);
         assertThat(r.status()).isEqualTo(200);

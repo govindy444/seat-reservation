@@ -1,0 +1,417 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Seat Reservation Live</title>
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7;
+    --surface: #fcfcfb;
+    --ink: #0b0b0b;
+    --ink-2: #52514e;
+    --muted: #898781;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11, 11, 11, 0.10);
+    --track: #f0efec;
+    --series-1: #2a78d6;   /* confirmed */
+    --series-2: #eb6834;   /* held */
+    --good: #0ca30c;
+    --good-ink: #006300;
+    --critical: #d03b3b;
+    --warning: #fab219;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page: #0d0d0d;
+      --surface: #1a1a19;
+      --ink: #ffffff;
+      --ink-2: #c3c2b7;
+      --muted: #898781;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255, 255, 255, 0.10);
+      --track: #383835;
+      --series-1: #3987e5;
+      --series-2: #d95926;
+      --good-ink: #0ca30c;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --track: #383835;
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --good-ink: #0ca30c;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1120px; margin: 0 auto; padding: 24px 16px 48px; }
+
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-bottom: 20px; }
+  h1 { font-size: 20px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  .meta { color: var(--ink-2); font-size: 13px; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  .meta code { font-size: 12px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 10px; border-radius: 999px; border: 1px solid var(--border);
+    background: var(--surface); font-size: 13px; font-weight: 550;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .ok .dot { background: var(--good); }
+  .bad .dot { background: var(--critical); }
+  .spacer { flex: 1; }
+  a { color: var(--series-1); }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px;
+  }
+  .card h2 { font-size: 13px; font-weight: 600; margin: 0 0 2px; color: var(--ink); }
+  .card .sub { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: 12px; margin-bottom: 12px; }
+  .tile .label { font-size: 12px; color: var(--ink-2); }
+  .tile .value { font-size: 28px; font-weight: 650; letter-spacing: -0.02em; margin-top: 2px; }
+  .tile .delta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .status-good { color: var(--good-ink); }
+  .status-critical { color: var(--critical); }
+
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 12px; margin-bottom: 12px; }
+  /* grid items default to min-width:auto and would grow to fit the table; let them shrink so the table scrolls */
+  .tiles > *, .grid2 > * { min-width: 0; }
+  .chart { position: relative; height: 180px; }
+  .chart svg { display: block; width: 100%; height: 100%; overflow: visible; }
+
+  .bars { display: grid; gap: 8px; }
+  .bar-row { display: grid; grid-template-columns: 200px 1fr 70px; align-items: center; gap: 10px; font-size: 13px; }
+  .bar-row .name { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar-row .num { text-align: right; font-variant-numeric: tabular-nums; }
+  .bar-track { height: 10px; border-radius: 4px; background: transparent; position: relative; }
+  .bar-fill { height: 10px; border-radius: 0 4px 4px 0; background: var(--series-1); min-width: 0; }
+  .zero .name, .zero .num { color: var(--muted); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-weight: 550; color: var(--muted); font-size: 12px; padding: 0 8px 8px 0; }
+  td { padding: 8px 8px 8px 0; border-top: 1px solid var(--grid); vertical-align: middle; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .show-name { font-weight: 550; }
+  .show-id { color: var(--muted); font-size: 12px; }
+  .seatbar { display: flex; gap: 2px; height: 10px; min-width: 120px; }
+  .seatbar span { display: block; height: 10px; }
+  .seatbar .c { background: var(--series-1); border-radius: 4px 0 0 4px; }
+  .seatbar .h { background: var(--series-2); }
+  .seatbar .a { background: var(--track); border-radius: 0 4px 4px 0; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--ink-2); margin-bottom: 10px; flex-wrap: wrap; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; vertical-align: -1px; margin-right: 5px; }
+  .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+  .table-wrap { overflow-x: auto; }
+
+  #tip {
+    position: fixed; pointer-events: none; z-index: 10; display: none;
+    background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+    font-variant-numeric: tabular-nums;
+  }
+  #tip .t { color: var(--muted); }
+  footer { color: var(--muted); font-size: 12px; margin-top: 16px; }
+
+  @media (max-width: 560px) {
+    .bar-row { grid-template-columns: 130px 1fr 56px; }
+    header .spacer { display: none; }
+    .tile .value { font-size: 24px; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Seat reservation · live</h1>
+    <span id="ready" class="pill"><span class="dot"></span><span>checking…</span></span>
+    <span class="spacer"></span>
+    <div class="meta">
+      <span>build <code id="commit">–</code></span>
+      <span id="updated">connecting…</span>
+    </div>
+  </header>
+
+  <section class="tiles" aria-label="Headline numbers">
+    <div class="card tile">
+      <div class="label">Reservations confirmed</div>
+      <div class="value" id="t-confirmed">–</div>
+      <div class="delta" id="t-confirmed-rate">&nbsp;</div>
+    </div>
+    <div class="card tile">
+      <div class="label">Requests declined</div>
+      <div class="value" id="t-declined">–</div>
+      <div class="delta" id="t-declined-rate">&nbsp;</div>
+    </div>
+    <div class="card tile">
+      <div class="label">Server errors (5xx)</div>
+      <div class="value" id="t-5xx">–</div>
+      <div class="delta" id="t-5xx-note">&nbsp;</div>
+    </div>
+    <div class="card tile">
+      <div class="label">API requests / s</div>
+      <div class="value" id="t-rps">–</div>
+      <div class="delta" id="t-total">&nbsp;</div>
+    </div>
+    <div class="card tile">
+      <div class="label">DB connections in use</div>
+      <div class="value" id="t-pool">–</div>
+      <div class="delta" id="t-pending">&nbsp;</div>
+    </div>
+  </section>
+
+  <section class="grid2">
+    <div class="card">
+      <h2>Reservations confirmed per second</h2>
+      <p class="sub">last 2 minutes</p>
+      <div class="chart" id="c-confirmed" role="img" aria-label="Confirmed reservations per second, last 2 minutes"></div>
+    </div>
+    <div class="card">
+      <h2>Requests declined per second</h2>
+      <p class="sub">last 2 minutes · all reasons</p>
+      <div class="chart" id="c-declined" role="img" aria-label="Declined requests per second, last 2 minutes"></div>
+    </div>
+  </section>
+
+  <section class="grid2">
+    <div class="card">
+      <h2>Declines by reason</h2>
+      <p class="sub">since service start · 4xx domain outcomes, never errors</p>
+      <div class="bars" id="reasons"></div>
+    </div>
+    <div class="card">
+      <h2>Seats per show</h2>
+      <p class="sub">10 most recent shows · refreshed from the database every 5s</p>
+      <div class="legend">
+        <span><span class="sw" style="background:var(--series-1)"></span>confirmed</span>
+        <span><span class="sw" style="background:var(--series-2)"></span>held</span>
+        <span><span class="sw" style="background:var(--track)"></span>available</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Show</th><th>Seats</th><th class="num">Avail.</th><th class="num">Held</th><th class="num">Conf.</th><th>Check</th></tr>
+          </thead>
+          <tbody id="shows"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    Same numbers as <a href="/actuator/prometheus">/actuator/prometheus</a> (read from the same registry) ·
+    <a href="/actuator/health/readiness">readiness</a> · <a href="/actuator/info">build info</a> ·
+    Check: available + held + confirmed must equal total seats.
+  </footer>
+</main>
+<div id="tip" role="tooltip"></div>
+
+<script>
+(() => {
+  const WINDOW = 120;          // seconds of history on the charts
+  const history = [];          // {t, confirmed, declined}  per-second rates
+  let prev = null;
+
+  const $ = id => document.getElementById(id);
+  const fmt = n => Math.round(n).toLocaleString();
+  const fmt1 = n => n >= 100 ? fmt(n) : n.toFixed(1);
+  const tip = $('tip');
+
+  function showTip(html, x, y) {
+    tip.innerHTML = html;
+    tip.style.display = 'block';
+    const w = tip.offsetWidth, h = tip.offsetHeight;
+    tip.style.left = Math.min(window.innerWidth - w - 8, x + 12) + 'px';
+    tip.style.top = Math.max(8, y - h - 10) + 'px';
+  }
+  function hideTip() { tip.style.display = 'none'; }
+
+  function niceMax(v) {
+    if (v <= 1) return 1;
+    const p = Math.pow(10, Math.floor(Math.log10(v)));
+    for (const m of [1, 2, 2.5, 5, 10]) if (v <= m * p) return m * p;
+    return 10 * p;
+  }
+
+  // ---------- line chart (one series, one axis) ----------
+  function lineChart(el, key, label) {
+    const w = el.clientWidth, h = el.clientHeight;
+    const padL = 44, padR = 8, padT = 8, padB = 22;
+    const iw = w - padL - padR, ih = h - padT - padB;
+    const data = history.slice(-WINDOW);
+    const max = niceMax(Math.max(1, ...data.map(d => d[key])));
+    const x = i => padL + (data.length <= 1 ? iw : (i + (WINDOW - data.length)) / (WINDOW - 1) * iw);
+    const y = v => padT + ih - (v / max) * ih;
+
+    let s = `<svg viewBox="0 0 ${w} ${h}" aria-hidden="true">`;
+    for (const f of [0, 0.5, 1]) {
+      const gy = y(max * f);
+      s += `<line x1="${padL}" x2="${w - padR}" y1="${gy}" y2="${gy}" stroke="var(${f === 0 ? '--axis' : '--grid'})" stroke-width="1"/>`;
+      s += `<text x="${padL - 8}" y="${gy + 4}" text-anchor="end" font-size="11" fill="var(--muted)">${fmt1(max * f)}</text>`;
+    }
+    s += `<text x="${padL}" y="${h - 4}" font-size="11" fill="var(--muted)">-${WINDOW}s</text>`;
+    s += `<text x="${w - padR}" y="${h - 4}" font-size="11" fill="var(--muted)" text-anchor="end">now</text>`;
+    if (data.length > 1) {
+      const pts = data.map((d, i) => `${x(i).toFixed(1)},${y(d[key]).toFixed(1)}`).join(' ');
+      s += `<polyline points="${pts}" fill="none" stroke="var(--series-1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+    }
+    s += `<line class="xh" y1="${padT}" y2="${padT + ih}" stroke="var(--axis)" stroke-width="1" visibility="hidden"/>`;
+    s += `<circle class="xd" r="4" fill="var(--series-1)" stroke="var(--surface)" stroke-width="2" visibility="hidden"/>`;
+    s += `<rect x="${padL}" y="0" width="${iw}" height="${h}" fill="transparent" class="hit"/>`;
+    s += `</svg>`;
+    el.innerHTML = s;
+
+    const svg = el.querySelector('svg'), xh = svg.querySelector('.xh'), xd = svg.querySelector('.xd');
+    svg.querySelector('.hit').addEventListener('mousemove', ev => {
+      if (data.length < 2) return;
+      const r = svg.getBoundingClientRect();
+      const px = ev.clientX - r.left;
+      let best = 0, bd = Infinity;
+      data.forEach((d, i) => { const dd = Math.abs(x(i) - px); if (dd < bd) { bd = dd; best = i; } });
+      const d = data[best];
+      xh.setAttribute('x1', x(best)); xh.setAttribute('x2', x(best)); xh.setAttribute('visibility', 'visible');
+      xd.setAttribute('cx', x(best)); xd.setAttribute('cy', y(d[key])); xd.setAttribute('visibility', 'visible');
+      const ago = Math.round((Date.now() - d.t) / 1000);
+      showTip(`<div class="t">${ago === 0 ? 'now' : ago + 's ago'}</div><b>${fmt1(d[key])}</b> ${label}/s`, ev.clientX, ev.clientY);
+    });
+    svg.querySelector('.hit').addEventListener('mouseleave', () => {
+      xh.setAttribute('visibility', 'hidden'); xd.setAttribute('visibility', 'hidden'); hideTip();
+    });
+  }
+
+  // ---------- declines by reason ----------
+  function reasons(declined) {
+    const rows = Object.entries(declined).sort((a, b) => b[1] - a[1]);
+    const max = Math.max(1, ...rows.map(r => r[1]));
+    $('reasons').innerHTML = rows.map(([k, v]) =>
+      `<div class="bar-row ${v === 0 ? 'zero' : ''}" data-tip="<b>${fmt(v)}</b> declined · ${k}">
+         <span class="name">${k}</span>
+         <span class="bar-track"><span class="bar-fill" style="display:block;width:${v === 0 ? 0 : Math.max(0.5, v / max * 100)}%"></span></span>
+         <span class="num">${fmt(v)}</span>
+       </div>`).join('');
+  }
+
+  // ---------- shows ----------
+  function shows(list) {
+    if (!list.length) {
+      $('shows').innerHTML = `<tr><td colspan="6" class="empty">No shows yet. Create one with POST /shows.</td></tr>`;
+      return;
+    }
+    $('shows').innerHTML = list.map(sh => {
+      const ok = sh.available + sh.held + sh.confirmed === sh.capacity;
+      const pc = n => (n / sh.capacity * 100).toFixed(2);
+      const tipHtml = `<b>${sh.name}</b><br>${fmt(sh.confirmed)} confirmed · ${fmt(sh.held)} held · ${fmt(sh.available)} available<br>of ${fmt(sh.capacity)} seats`;
+      return `<tr data-tip="${tipHtml.replace(/"/g, '&quot;')}">
+        <td><div class="show-name">${escapeHtml(sh.name)}</div><div class="show-id">${sh.show_id.slice(0, 8)}</div></td>
+        <td><div class="seatbar">
+          ${sh.confirmed ? `<span class="c" style="width:${pc(sh.confirmed)}%"></span>` : ''}
+          ${sh.held ? `<span class="h" style="width:${pc(sh.held)}%"></span>` : ''}
+          ${sh.available ? `<span class="a" style="width:${pc(sh.available)}%"></span>` : ''}
+        </div></td>
+        <td class="num">${fmt(sh.available)}</td>
+        <td class="num">${fmt(sh.held)}</td>
+        <td class="num">${fmt(sh.confirmed)}</td>
+        <td class="${ok ? 'status-good' : 'status-critical'}">${ok ? '✓ adds up' : '✕ mismatch'}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  // per-mark hover for bars and table rows
+  document.addEventListener('mousemove', ev => {
+    const el = ev.target.closest && ev.target.closest('[data-tip]');
+    if (el) showTip(el.getAttribute('data-tip'), ev.clientX, ev.clientY);
+    else if (!ev.target.closest('.chart')) hideTip();
+  });
+
+  // ---------- polling ----------
+  async function poll() {
+    try {
+      const r = await fetch('/dashboard/stats', { cache: 'no-store' });
+      const s = await r.json();
+      const declinedTotal = Object.values(s.declined).reduce((a, b) => a + b, 0);
+      const now = Date.now();
+      const cur = { t: now, confirmed: s.confirmed, declined: declinedTotal, http: s.http_total, e5: s.http_by_status_class['5xx'] || 0 };
+
+      let rate = { confirmed: 0, declined: 0, http: 0 };
+      if (prev) {
+        const dt = (cur.t - prev.t) / 1000;
+        const d = k => Math.max(0, cur[k] - prev[k]) / dt;  // counters reset on restart: clamp at 0
+        rate = { confirmed: d('confirmed'), declined: d('declined'), http: d('http') };
+        history.push({ t: now, confirmed: rate.confirmed, declined: rate.declined });
+        if (history.length > WINDOW) history.shift();
+      }
+      prev = cur;
+
+      $('commit').textContent = (s.commit || 'local').slice(0, 7);
+      $('t-confirmed').textContent = fmt(s.confirmed);
+      $('t-confirmed-rate').textContent = `${fmt1(rate.confirmed)}/s now · ${fmt(s.cancelled)} cancelled`;
+      $('t-declined').textContent = fmt(declinedTotal);
+      $('t-declined-rate').textContent = `${fmt1(rate.declined)}/s now`;
+      const e5 = $('t-5xx');
+      e5.textContent = fmt(cur.e5);
+      e5.className = 'value ' + (cur.e5 === 0 ? 'status-good' : 'status-critical');
+      $('t-5xx-note').innerHTML = cur.e5 === 0
+        ? '<span class="status-good">✓ none</span>'
+        : '<span class="status-critical">✕ check logs</span>';
+      $('t-rps').textContent = fmt1(rate.http);
+      $('t-total').textContent = `${fmt(s.http_total)} since start`;
+      $('t-pool').textContent = `${fmt(s.pool.active)} / ${fmt(s.pool.max)}`;
+      $('t-pending').textContent = `${fmt(s.pool.pending)} requests waiting for a connection`;
+
+      lineChart($('c-confirmed'), 'confirmed', 'confirmed');
+      lineChart($('c-declined'), 'declined', 'declined');
+      reasons(s.declined);
+      shows(s.shows);
+      $('updated').textContent = 'live · updated ' + new Date(now).toLocaleTimeString();
+    } catch (e) {
+      $('updated').textContent = 'connection lost, retrying…';
+    }
+  }
+
+  async function readiness() {
+    const pill = $('ready');
+    try {
+      const r = await fetch('/actuator/health/readiness', { cache: 'no-store' });
+      const ok = r.status === 200;
+      pill.className = 'pill ' + (ok ? 'ok' : 'bad');
+      pill.lastElementChild.textContent = ok ? 'Ready · database up' : 'Not ready · database unreachable';
+    } catch (e) {
+      pill.className = 'pill bad';
+      pill.lastElementChild.textContent = 'Unreachable';
+    }
+  }
+
+  poll(); readiness();
+  setInterval(poll, 1000);
+  setInterval(readiness, 5000);
+  window.addEventListener('resize', () => {
+    lineChart($('c-confirmed'), 'confirmed', 'confirmed');
+    lineChart($('c-declined'), 'declined', 'declined');
+  });
+})();
+</script>
+</body>
+</html>

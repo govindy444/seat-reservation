@@ -1,7 +1,9 @@
 package com.example.seats.observability;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -72,26 +74,41 @@ public class ReservationMetrics {
         seatsReleased.increment(seats);
     }
 
+    /** Per-show seat counts from the last refresh; the same numbers the show_seats gauges export. */
+    public record ShowSeats(UUID showId, String name, Instant createdAt, long available, long held, long confirmed,
+                            long capacity) {
+    }
+
+    private volatile List<ShowSeats> snapshot = List.of();
+
+    public List<ShowSeats> snapshot() {
+        return snapshot;
+    }
+
     @Scheduled(fixedDelayString = "${app.metrics.seat-gauge-interval:5s}", initialDelay = 0)
     public void refreshSeatGauges() {
         try {
-            record Row(UUID showId, String status, long n, long total) {
-            }
-            List<Row> rows = jdbc.query("""
-                    WITH recent AS (SELECT id, total_seats FROM shows ORDER BY created_at DESC LIMIT ?)
-                    SELECT r.id AS show_id, st.status, count(s.label) AS n, r.total_seats
-                    FROM recent r
-                    CROSS JOIN (VALUES ('available'), ('held'), ('confirmed')) AS st(status)
-                    LEFT JOIN seats s ON s.show_id = r.id AND s.status = st.status
-                    GROUP BY r.id, st.status, r.total_seats
-                    """, (rs, i) -> new Row(rs.getObject("show_id", UUID.class), rs.getString("status"),
-                    rs.getLong("n"), rs.getLong("total_seats")), TRACKED_SHOWS);
+            List<ShowSeats> shows = jdbc.query("""
+                    WITH recent AS (SELECT id, name, created_at, total_seats FROM shows ORDER BY created_at DESC LIMIT ?)
+                    SELECT r.id, r.name, r.created_at, r.total_seats,
+                           count(s.label) FILTER (WHERE s.status = 'available') AS available,
+                           count(s.label) FILTER (WHERE s.status = 'held') AS held,
+                           count(s.label) FILTER (WHERE s.status = 'confirmed') AS confirmed
+                    FROM recent r LEFT JOIN seats s ON s.show_id = r.id
+                    GROUP BY r.id, r.name, r.created_at, r.total_seats
+                    ORDER BY r.created_at DESC
+                    """, (rs, i) -> new ShowSeats(rs.getObject("id", UUID.class), rs.getString("name"),
+                    rs.getTimestamp("created_at").toInstant(), rs.getLong("available"), rs.getLong("held"),
+                    rs.getLong("confirmed"), rs.getLong("total_seats")), TRACKED_SHOWS);
 
-            showSeats.register(rows.stream().map(r -> MultiGauge.Row.of(
-                    Tags.of("show_id", r.showId().toString(), "status", r.status()), r.n())).toList(), true);
-            showCapacity.register(rows.stream().map(Row::showId).distinct().map(id -> MultiGauge.Row.of(
-                    Tags.of("show_id", id.toString()),
-                    rows.stream().filter(r -> r.showId().equals(id)).findFirst().orElseThrow().total())).toList(), true);
+            showSeats.register(shows.stream().flatMap(sh -> Stream.of(
+                    MultiGauge.Row.of(Tags.of("show_id", sh.showId().toString(), "status", "available"), sh.available()),
+                    MultiGauge.Row.of(Tags.of("show_id", sh.showId().toString(), "status", "held"), sh.held()),
+                    MultiGauge.Row.of(Tags.of("show_id", sh.showId().toString(), "status", "confirmed"), sh.confirmed())))
+                    .toList(), true);
+            showCapacity.register(shows.stream().map(sh -> MultiGauge.Row.of(
+                    Tags.of("show_id", sh.showId().toString()), sh.capacity())).toList(), true);
+            snapshot = shows;
         } catch (Exception e) {
             // DB down: keep last values; readiness reports the outage
             log.warn("seat gauge refresh failed: {}", e.toString());
