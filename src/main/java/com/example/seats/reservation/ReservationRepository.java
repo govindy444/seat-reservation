@@ -3,7 +3,9 @@ package com.example.seats.reservation;
 import java.sql.Array;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -17,8 +19,42 @@ public class ReservationRepository {
 
     private final JdbcTemplate jdbc;
 
+    public record StoredReservation(Reservation reservation, String requestHash) {
+    }
+
     public ReservationRepository(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
+    }
+
+    /**
+     * Serializes all reserve/cancel work for one (show, user) pair for the rest of the transaction.
+     * Always taken BEFORE any seat row lock, so lock order is global: user lock, then seats in label order.
+     * A hash collision between two pairs only adds waiting, never a wrong answer.
+     */
+    public void lockUser(UUID showId, String userId) {
+        jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(?, 0))", rs -> null, showId + ":" + userId);
+    }
+
+    /** Seats this user currently holds or owns in the show; read after lockUser, so no concurrent insert can hide. */
+    public int countUserSeats(UUID showId, String userId) {
+        Integer n = jdbc.queryForObject(
+                "SELECT count(*) FROM seats WHERE show_id = ? AND user_id = ? AND status <> 'available'",
+                Integer.class, showId, userId);
+        return n == null ? 0 : n;
+    }
+
+    public Optional<StoredReservation> findByIdempotencyKey(String userId, String idempotencyKey) {
+        return jdbc.query("""
+                SELECT id, show_id, user_id, seats, amount_paise, status, request_hash
+                FROM reservations WHERE user_id = ? AND idempotency_key = ?
+                """, (rs, i) -> new StoredReservation(new Reservation(
+                rs.getObject("id", UUID.class),
+                rs.getObject("show_id", UUID.class),
+                rs.getString("user_id"),
+                Arrays.asList((String[]) rs.getArray("seats").getArray()),
+                rs.getLong("amount_paise"),
+                rs.getString("status")), rs.getString("request_hash")), userId, idempotencyKey)
+                .stream().findFirst();
     }
 
     /**

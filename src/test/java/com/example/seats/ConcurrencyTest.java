@@ -40,7 +40,7 @@ class ConcurrencyTest {
     }
 
     /** Fires all tasks at once behind a start gate and tallies status codes. */
-    Map<Integer, AtomicInteger> stampede(List<java.util.function.Supplier<ApiClient.Resp>> tasks) throws Exception {
+    static Map<Integer, AtomicInteger> stampede(List<java.util.function.Supplier<ApiClient.Resp>> tasks) throws Exception {
         Map<Integer, AtomicInteger> codes = new ConcurrentHashMap<>();
         CountDownLatch gate = new CountDownLatch(1);
         try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {

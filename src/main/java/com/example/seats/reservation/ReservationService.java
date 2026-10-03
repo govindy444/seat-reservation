@@ -6,6 +6,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -16,6 +17,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.example.seats.api.ApiException;
+import com.example.seats.reservation.ReservationRepository.LockedSeat;
+import com.example.seats.reservation.ReservationRepository.StoredReservation;
 import com.example.seats.show.Show;
 import com.example.seats.show.ShowRepository;
 
@@ -33,10 +36,15 @@ public class ReservationService {
     }
 
     /**
-     * All-or-nothing: either every requested seat is confirmed to this user, or none is and the caller gets 409.
-     * The transaction is driven explicitly so database exceptions can be handled after rollback.
+     * One transaction, locks always in the same order: (show,user) advisory lock, then seat rows by label.
+     * <ol>
+     *   <li>idempotency: a stored reservation for (user, key) is replayed if the request matches, else 409</li>
+     *   <li>per-user limit: counted under the user lock, so parallel requests from one user cannot overshoot</li>
+     *   <li>seats: all-or-nothing; any taken seat rolls back the whole request with 409</li>
+     * </ol>
+     * Declines are not stored, so retrying a declined request re-evaluates it.
      */
-    public Reservation reserve(UUID showId, String userId, List<String> requestedSeats, String idempotencyKey) {
+    public ReserveOutcome reserve(UUID showId, String userId, List<String> requestedSeats, String idempotencyKey) {
         Set<String> unique = new LinkedHashSet<>(requestedSeats);
         if (unique.size() != requestedSeats.size()) {
             throw ApiException.badRequest("duplicate seats in request");
@@ -48,15 +56,27 @@ public class ReservationService {
         try {
             return tx.execute(status -> {
                 Show show = shows.findShow(showId).orElseThrow(() -> ApiException.notFound("show"));
+                reservations.lockUser(showId, userId);
 
-                List<ReservationRepository.LockedSeat> locked = reservations.lockSeats(showId, sorted);
+                Optional<StoredReservation> existing = reservations.findByIdempotencyKey(userId, idempotencyKey);
+                if (existing.isPresent()) {
+                    return replay(existing.get(), requestHash);
+                }
+
+                int owned = reservations.countUserSeats(showId, userId);
+                if (owned + seats.size() > show.perUserLimit()) {
+                    throw new ApiException(HttpStatus.CONFLICT, "per_user_limit",
+                            "per-user limit is " + show.perUserLimit() + " seats; you hold " + owned);
+                }
+
+                List<LockedSeat> locked = reservations.lockSeats(showId, sorted);
                 if (locked.size() != sorted.size()) {
-                    Set<String> found = locked.stream().map(ReservationRepository.LockedSeat::label).collect(Collectors.toSet());
+                    Set<String> found = locked.stream().map(LockedSeat::label).collect(Collectors.toSet());
                     List<String> unknown = sorted.stream().filter(s -> !found.contains(s)).toList();
                     throw new ApiException(HttpStatus.BAD_REQUEST, "unknown_seat", "unknown seats: " + unknown);
                 }
                 List<String> taken = locked.stream().filter(s -> !"available".equals(s.status()))
-                        .map(ReservationRepository.LockedSeat::label).toList();
+                        .map(LockedSeat::label).toList();
                 if (!taken.isEmpty()) {
                     throw new ApiException(HttpStatus.CONFLICT, "seat_taken", "seats already taken: " + taken);
                 }
@@ -70,12 +90,22 @@ public class ReservationService {
                     // unreachable while we hold the row locks; fail loudly rather than sell a partial set
                     throw new IllegalStateException("claimed " + claimed + " of " + sorted.size() + " locked seats");
                 }
-                return r;
+                return new ReserveOutcome(r, false);
             });
         } catch (DuplicateKeyException e) {
-            // same (user, idempotency_key) already used; replay semantics arrive with the idempotency step
-            throw new ApiException(HttpStatus.CONFLICT, "idempotency_key_reused", "idempotency key already used");
+            // Same key raced in on a different show (different user lock); the winner has committed by now.
+            StoredReservation stored = tx.execute(s -> reservations.findByIdempotencyKey(userId, idempotencyKey))
+                    .orElseThrow(() -> e);
+            return replay(stored, requestHash);
         }
+    }
+
+    private static ReserveOutcome replay(StoredReservation stored, String requestHash) {
+        if (!stored.requestHash().equals(requestHash)) {
+            throw new ApiException(HttpStatus.CONFLICT, "idempotency_key_mismatch",
+                    "idempotency key was already used for a different request");
+        }
+        return new ReserveOutcome(stored.reservation(), true);
     }
 
     private static String hash(String s) {

@@ -25,15 +25,20 @@ public class ReservationController {
         this.service = service;
     }
 
-    /** Idempotency key may come from the Idempotency-Key header or the body; if both are sent they must match. */
+    /**
+     * 201 = new reservation. 200 = idempotent replay of an earlier one (nothing new booked), so retries never
+     * show up as extra 201s. Idempotency key may come from the Idempotency-Key header or the body.
+     */
     @PostMapping("/shows/{showId}/reserve")
     ResponseEntity<Reservation> reserve(@PathVariable UUID showId,
                                         @Valid @RequestBody ReserveRequest req,
                                         @RequestHeader(name = "Idempotency-Key", required = false) String headerKey,
                                         @AuthenticationPrincipal Jwt jwt) {
         String key = resolveKey(headerKey, req.idempotencyKey());
-        Reservation r = service.reserve(showId, jwt.getSubject(), req.seats(), key);
-        return ResponseEntity.status(HttpStatus.CREATED).body(r);
+        ReserveOutcome outcome = service.reserve(showId, jwt.getSubject(), req.seats(), key);
+        return ResponseEntity.status(outcome.replayed() ? HttpStatus.OK : HttpStatus.CREATED)
+                .header("Idempotent-Replayed", String.valueOf(outcome.replayed()))
+                .body(outcome.reservation());
     }
 
     private static String resolveKey(String header, String body) {
