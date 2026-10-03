@@ -44,11 +44,15 @@ public class Burst {
     static int concurrency = 1000;
     static String adminKey = System.getenv().getOrDefault("ADMIN_KEY", "dev-admin-key");
 
-    static final HttpClient http = HttpClient.newBuilder()
-            .executor(Executors.newVirtualThreadPerTaskExecutor())
-            .connectTimeout(Duration.ofSeconds(20))
-            .build();
-    static Semaphore inFlight;
+    /**
+     * A pool of clients, each its own connection with at most STREAMS_PER_CONNECTION requests in flight.
+     * One HTTP/2 connection would otherwise exceed the edge's max-concurrent-streams and the JDK client fails
+     * those requests locally ("too many concurrent streams") without ever sending them.
+     */
+    static final int STREAMS_PER_CONNECTION = 50;
+    static HttpClient[] clients;
+    static Semaphore[] slots;
+    static final AtomicInteger nextClient = new AtomicInteger();
     static final Random rnd = new Random(42);
 
     // ---------- result bookkeeping ----------
@@ -79,9 +83,18 @@ public class Burst {
 
     public static void main(String[] args) throws Exception {
         parseArgs(args);
-        inFlight = new Semaphore(concurrency);
-        System.out.printf("Burst against %s  (requests~%d, hot seats=%d x %d users, concurrency=%d)%n%n",
-                base, totalRequests, hotSeats, perHotSeat, concurrency);
+        int connections = Math.max(1, (concurrency + STREAMS_PER_CONNECTION - 1) / STREAMS_PER_CONNECTION);
+        clients = new HttpClient[connections];
+        slots = new Semaphore[connections];
+        for (int i = 0; i < connections; i++) {
+            clients[i] = HttpClient.newBuilder()
+                    .executor(Executors.newVirtualThreadPerTaskExecutor())
+                    .connectTimeout(Duration.ofSeconds(20))
+                    .build();
+            slots[i] = new Semaphore(STREAMS_PER_CONNECTION);
+        }
+        System.out.printf("Burst against %s  (requests~%d, hot seats=%d x %d users, concurrency=%d over %d connections)%n%n",
+                base, totalRequests, hotSeats, perHotSeat, concurrency, clients.length);
 
         Resp ready = send(get("/actuator/health/readiness"), false);
         System.out.println("readiness: " + ready.status());
@@ -324,22 +337,43 @@ public class Burst {
         return send(post("/auth/token", body, null), false).field("access_token");
     }
 
+    /** Setup, not the system under test: failed mints are retried (and reported) so a blip can't abort a run. */
     static List<String> mintTokens(String prefix, int n) throws Exception {
         String run = Long.toString(System.currentTimeMillis(), 36);
         String[] out = new String[n];
-        List<Supplier<Resp>> tasks = new ArrayList<>();
-        for (int i = 0; i < n; i++) {
-            int idx = i;
-            tasks.add(() -> {
-                Resp r = send(post("/auth/token", "{\"user_id\":\"" + prefix + "-" + run + "-" + idx + "\"}", null), false);
-                out[idx] = r.field("access_token");
-                return r;
-            });
+        Map<String, AtomicInteger> mintFailures = new ConcurrentHashMap<>();
+        for (int attempt = 1; attempt <= 4; attempt++) {
+            List<Supplier<Resp>> tasks = new ArrayList<>();
+            for (int i = 0; i < n; i++) {
+                if (out[i] != null) {
+                    continue;
+                }
+                int idx = i;
+                tasks.add(() -> {
+                    Resp r = send(post("/auth/token", "{\"user_id\":\"" + prefix + "-" + run + "-" + idx + "\"}", null), false);
+                    out[idx] = r.field("access_token");
+                    if (out[idx] == null) {
+                        mintFailures.computeIfAbsent(r.status() + " " + r.body().substring(0, Math.min(80, r.body().length())),
+                                k -> new AtomicInteger()).incrementAndGet();
+                    }
+                    return r;
+                });
+            }
+            if (tasks.isEmpty()) {
+                break;
+            }
+            if (attempt > 1) {
+                System.out.printf("    retrying %d token mints (attempt %d)%n", tasks.size(), attempt);
+                Thread.sleep(1000L * attempt);
+            }
+            stampede(tasks);
         }
-        stampede(tasks);
+        if (!mintFailures.isEmpty()) {
+            System.out.println("    token mint failures seen (setup only): " + mintFailures);
+        }
         for (String t : out) {
             if (t == null) {
-                throw new IllegalStateException("token minting failed");
+                throw new IllegalStateException("token minting failed: " + mintFailures);
             }
         }
         return List.of(out);
@@ -394,13 +428,14 @@ public class Burst {
         HttpRequest req = b.header("X-Request-Id", requestId).timeout(Duration.ofSeconds(90)).build();
         long start = System.nanoTime();
         Resp r;
+        int c = Math.floorMod(nextClient.getAndIncrement(), clients.length);
         try {
-            inFlight.acquire();
+            slots[c].acquire();
             try {
-                HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+                HttpResponse<String> res = clients[c].send(req, HttpResponse.BodyHandlers.ofString());
                 r = new Resp(res.statusCode(), res.body(), (System.nanoTime() - start) / 1000, requestId);
             } finally {
-                inFlight.release();
+                slots[c].release();
             }
         } catch (Exception e) {
             r = new Resp(-1, e.toString(), (System.nanoTime() - start) / 1000, requestId);
