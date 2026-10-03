@@ -132,6 +132,14 @@ class IdempotencyAndLimitTest {
     }
 
     @Test
+    void invalidSeatIsRejectedAsInvalidEvenAtLimit() {
+        assertThat(api.reserve(show, alice, UUID.randomUUID().toString(), "C1", "C2", "C3", "C4").status()).isEqualTo(201);
+        var r = api.reserve(show, alice, UUID.randomUUID().toString(), "Z99");
+        assertThat(r.status()).isEqualTo(400);
+        assertThat(r.field("error")).isEqualTo("unknown_seat");
+    }
+
+    @Test
     void customLimitIsRespected() {
         String strict = api.createShow("{\"name\":\"s\",\"seats\":[\"D1\",\"D2\"],\"price_paise\":1,\"per_user_limit\":1}");
         assertThat(api.reserve(strict, alice, UUID.randomUUID().toString(), "D1").status()).isEqualTo(201);

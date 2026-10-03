@@ -44,7 +44,7 @@ public class ReservationRepository {
         return n == null ? 0 : n;
     }
 
-    public record Precheck(int existing, int available, boolean keySeen) {
+    public record Precheck(boolean showExists, int existing, int available, boolean keySeen) {
     }
 
     /**
@@ -54,19 +54,22 @@ public class ReservationRepository {
     public Precheck precheck(UUID showId, List<String> labels, String userId, String idempotencyKey) {
         return jdbc.query(con -> {
             var ps = con.prepareStatement("""
-                    SELECT count(*) AS existing,
+                    SELECT EXISTS (SELECT 1 FROM shows WHERE id = ?) AS show_exists,
+                           count(*) AS existing,
                            count(*) FILTER (WHERE status = 'available') AS available,
                            EXISTS (SELECT 1 FROM reservations WHERE user_id = ? AND idempotency_key = ?) AS key_seen
                     FROM seats WHERE show_id = ? AND label = ANY(?)
                     """);
-            ps.setString(1, userId);
-            ps.setString(2, idempotencyKey);
-            ps.setObject(3, showId);
-            ps.setArray(4, textArray(con, labels));
+            ps.setObject(1, showId);
+            ps.setString(2, userId);
+            ps.setString(3, idempotencyKey);
+            ps.setObject(4, showId);
+            ps.setArray(5, textArray(con, labels));
             return ps;
         }, rs -> {
             rs.next();
-            return new Precheck(rs.getInt("existing"), rs.getInt("available"), rs.getBoolean("key_seen"));
+            return new Precheck(rs.getBoolean("show_exists"), rs.getInt("existing"), rs.getInt("available"),
+                    rs.getBoolean("key_seen"));
         });
     }
 

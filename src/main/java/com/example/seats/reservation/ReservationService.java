@@ -87,13 +87,22 @@ public class ReservationService {
         List<String> sorted = seats.stream().sorted().toList();
         String requestHash = hash(showId + "|" + String.join(",", sorted));
 
-        // Fast decline, no transaction or locks: if a requested seat is already committed as taken, the request
-        // cannot succeed, so answer 409 now instead of queueing on the seat's row lock with a pooled connection.
+        // Fast decline, no transaction or locks, in order of precedence: unknown show (404), unknown seat (400,
+        // invalid input regardless of the user's state), seat already committed as taken (409). A request that
+        // fails here cannot succeed, so answer now instead of queueing on row locks with a pooled connection.
         // A committed "taken" is a true fact at a moment inside this request, so declining on it is linearizable.
         // Confirming still only happens in the locked path below. Skipped when the key was seen (must replay).
         ReservationRepository.Precheck pre = reservations.precheck(showId, sorted, userId, idempotencyKey);
-        if (!pre.keySeen() && pre.existing() == sorted.size() && pre.available() < sorted.size()) {
-            throw new ApiException(HttpStatus.CONFLICT, "seat_taken", "seats already taken");
+        if (!pre.keySeen()) {
+            if (!pre.showExists()) {
+                throw ApiException.notFound("show");
+            }
+            if (pre.existing() < sorted.size()) {
+                throw new ApiException(HttpStatus.BAD_REQUEST, "unknown_seat", "unknown seats in request");
+            }
+            if (pre.available() < sorted.size()) {
+                throw new ApiException(HttpStatus.CONFLICT, "seat_taken", "seats already taken");
+            }
         }
 
         try {
