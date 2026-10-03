@@ -21,7 +21,10 @@ public class ApiClient {
         }
     }
 
-    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
+    private final HttpClient http = HttpClient.newBuilder()
+            .version(HttpClient.Version.HTTP_1_1)
+            .connectTimeout(Duration.ofSeconds(10))
+            .build();
     private final String base;
 
     public ApiClient(int port) {
@@ -46,13 +49,26 @@ public class ApiClient {
                 .POST(HttpRequest.BodyPublishers.ofString(json)));
     }
 
+    public String createShow(String json) {
+        Resp r = post("/shows", json, adminToken());
+        if (r.status() != 201) {
+            throw new AssertionError("create show failed: " + r);
+        }
+        return r.field("id");
+    }
+
+    public Resp reserve(String showId, String token, String key, String... seats) {
+        String list = String.join(",", java.util.Arrays.stream(seats).map(s -> "\"" + s + "\"").toList());
+        return post("/shows/" + showId + "/reserve", "{\"seats\":[" + list + "],\"idempotency_key\":\"" + key + "\"}", token);
+    }
+
     private static HttpRequest.Builder auth(HttpRequest.Builder b, String token) {
         return token == null ? b : b.header("Authorization", "Bearer " + token);
     }
 
     private Resp send(HttpRequest.Builder b) {
         try {
-            HttpResponse<String> r = http.send(b.timeout(Duration.ofSeconds(30)).build(), HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> r = http.send(b.timeout(Duration.ofSeconds(60)).build(), HttpResponse.BodyHandlers.ofString());
             return new Resp(r.statusCode(), r.body());
         } catch (Exception e) {
             throw new RuntimeException(e);
