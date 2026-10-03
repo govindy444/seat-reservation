@@ -43,7 +43,16 @@ logging:
       # JSON lines (ECS) with MDC request_id and key-value pairs; set LOG_FORMAT=logstash for that schema
       console: ${LOG_FORMAT:ecs}
 
+info:
+  app:
+    # Railway injects the deployed commit; lets anyone verify which build is live via /actuator/info
+    commit: ${RAILWAY_GIT_COMMIT_SHA:local}
+    deployment: ${RAILWAY_DEPLOYMENT_ID:local}
+
 management:
+  info:
+    env:
+      enabled: true
   endpoints:
     web:
       exposure:
