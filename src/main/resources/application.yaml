@@ -1,0 +1,38 @@
+spring:
+  application:
+    name: seat-reservation
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: jdbc:postgresql://${PGHOST:localhost}:${PGPORT:5432}/${PGDATABASE:seats}
+    username: ${PGUSER:seats}
+    password: ${PGPASSWORD:seats}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+      # requests wait for a connection instead of failing fast; tuned in the load-test step
+      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:30000}
+  flyway:
+    enabled: true
+
+server:
+  port: ${PORT:8080}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+      group:
+        # liveness: is the JVM alive? never depends on the DB (a DB outage must not restart-loop us)
+        liveness:
+          include: livenessState
+        # readiness: can we serve traffic? fails closed when Postgres is unreachable
+        readiness:
+          include: readinessState,db
