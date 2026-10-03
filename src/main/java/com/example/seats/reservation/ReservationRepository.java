@@ -44,6 +44,32 @@ public class ReservationRepository {
         return n == null ? 0 : n;
     }
 
+    public record Precheck(int existing, int available, boolean keySeen) {
+    }
+
+    /**
+     * One lock-free round trip on committed data: how many of the requested seats exist, how many are still
+     * available, and whether this (user, key) was already used. Used only to DECLINE early; never to confirm.
+     */
+    public Precheck precheck(UUID showId, List<String> labels, String userId, String idempotencyKey) {
+        return jdbc.query(con -> {
+            var ps = con.prepareStatement("""
+                    SELECT count(*) AS existing,
+                           count(*) FILTER (WHERE status = 'available') AS available,
+                           EXISTS (SELECT 1 FROM reservations WHERE user_id = ? AND idempotency_key = ?) AS key_seen
+                    FROM seats WHERE show_id = ? AND label = ANY(?)
+                    """);
+            ps.setString(1, userId);
+            ps.setString(2, idempotencyKey);
+            ps.setObject(3, showId);
+            ps.setArray(4, textArray(con, labels));
+            return ps;
+        }, rs -> {
+            rs.next();
+            return new Precheck(rs.getInt("existing"), rs.getInt("available"), rs.getBoolean("key_seen"));
+        });
+    }
+
     public Optional<StoredReservation> findByIdempotencyKey(String userId, String idempotencyKey) {
         return jdbc.query("""
                 SELECT id, show_id, user_id, seats, amount_paise, status, request_hash

@@ -22,5 +22,8 @@ services:
       PGDATABASE: seats
       PGUSER: seats
       PGPASSWORD: seats
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-20}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-in-production-0123456789}
+      ADMIN_KEY: ${ADMIN_KEY:-dev-admin-key}
     ports:
       - "${APP_HOST_PORT:-8080}:8080"
