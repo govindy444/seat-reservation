@@ -14,6 +14,18 @@ spring:
       connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:30000}
   flyway:
     enabled: true
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    deserialization:
+      # money is integer paise: reject 250.5 instead of silently truncating it to 250
+      accept-float-as-int: false
+      fail-on-unknown-properties: false
+
+app:
+  jwt:
+    secret: ${JWT_SECRET:dev-only-secret-change-me-in-production-0123456789}
+    ttl: ${JWT_TTL:24h}
+  admin-key: ${ADMIN_KEY:dev-admin-key}
 
 server:
   port: ${PORT:8080}
