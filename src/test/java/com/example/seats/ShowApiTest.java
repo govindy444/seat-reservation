@@ -56,4 +56,12 @@ class ShowApiTest {
         assertThat(api.get("/shows/00000000-0000-0000-0000-000000000000", null).status()).isEqualTo(404);
         assertThat(api.get("/shows/not-a-uuid", null).status()).isEqualTo(400);
     }
+
+    @Test
+    void frameworkErrorsKeepTheir4xxStatus() {
+        assertThat(api.get("/no-such-route", admin).status()).isEqualTo(404);
+        assertThat(api.get("/actuator/nope", null).status()).isIn(401, 404);
+        assertThat(api.get("/shows", admin).status()).isEqualTo(405);
+        assertThat(api.post("/shows/" + java.util.UUID.randomUUID(), "{}", admin).status()).isIn(403, 405);
+    }
 }

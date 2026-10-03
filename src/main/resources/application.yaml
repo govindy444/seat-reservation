@@ -9,8 +9,10 @@ spring:
     username: ${PGUSER:seats}
     password: ${PGPASSWORD:seats}
     hikari:
+      # Postgres does the work; more connections than cores just adds lock/CPU contention there.
       maximum-pool-size: ${DB_POOL_SIZE:20}
-      # requests wait for a connection instead of failing fast; tuned in the load-test step
+      # A burst queues for a connection (virtual threads make waiting cheap) instead of failing;
+      # if no connection frees up within this window the request gets an explicit 503.
       connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:30000}
   flyway:
     enabled: true
@@ -30,12 +32,26 @@ app:
 server:
   port: ${PORT:8080}
   shutdown: graceful
+  tomcat:
+    # with virtual threads, connections (not threads) are the limit; let a stampede queue rather than be refused
+    max-connections: ${TOMCAT_MAX_CONNECTIONS:20000}
+    accept-count: ${TOMCAT_ACCEPT_COUNT:10000}
+
+logging:
+  structured:
+    format:
+      # JSON lines (ECS) with MDC request_id and key-value pairs; set LOG_FORMAT=logstash for that schema
+      console: ${LOG_FORMAT:ecs}
 
 management:
   endpoints:
     web:
       exposure:
         include: health,prometheus,info
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
   endpoint:
     health:
       probes:
@@ -47,4 +63,4 @@ management:
           include: livenessState
         # readiness: can we serve traffic? fails closed when Postgres is unreachable
         readiness:
-          include: readinessState,db
+          include: readinessState,database

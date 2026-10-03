@@ -11,12 +11,15 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.example.seats.api.ApiException;
+import com.example.seats.observability.ReservationMetrics;
 import com.example.seats.reservation.ReservationRepository.LockedSeat;
 import com.example.seats.reservation.ReservationRepository.StoredReservation;
 import com.example.seats.show.Show;
@@ -25,14 +28,19 @@ import com.example.seats.show.ShowRepository;
 @Service
 public class ReservationService {
 
+    private static final Logger log = LoggerFactory.getLogger(ReservationService.class);
+
     private final ReservationRepository reservations;
     private final ShowRepository shows;
     private final TransactionTemplate tx;
+    private final ReservationMetrics metrics;
 
-    public ReservationService(ReservationRepository reservations, ShowRepository shows, TransactionTemplate tx) {
+    public ReservationService(ReservationRepository reservations, ShowRepository shows, TransactionTemplate tx,
+                              ReservationMetrics metrics) {
         this.reservations = reservations;
         this.shows = shows;
         this.tx = tx;
+        this.metrics = metrics;
     }
 
     /**
@@ -45,6 +53,32 @@ public class ReservationService {
      * Declines are not stored, so retrying a declined request re-evaluates it.
      */
     public ReserveOutcome reserve(UUID showId, String userId, List<String> requestedSeats, String idempotencyKey) {
+        try {
+            ReserveOutcome outcome = doReserve(showId, userId, requestedSeats, idempotencyKey);
+            Reservation r = outcome.reservation();
+            if (outcome.replayed()) {
+                metrics.declined("idempotent-replay");
+            } else {
+                metrics.confirmed(r.seats().size());
+            }
+            log.atInfo().setMessage("reserve")
+                    .addKeyValue("outcome", outcome.replayed() ? "replayed" : "confirmed")
+                    .addKeyValue("show_id", showId).addKeyValue("user_id", userId)
+                    .addKeyValue("seats", r.seats()).addKeyValue("reservation_id", r.reservationId())
+                    .addKeyValue("amount_paise", r.amountPaise()).log();
+            return outcome;
+        } catch (ApiException e) {
+            String reason = e.code().replace('_', '-');
+            metrics.declined(reason);
+            log.atInfo().setMessage("reserve")
+                    .addKeyValue("outcome", "declined").addKeyValue("reason", reason)
+                    .addKeyValue("show_id", showId).addKeyValue("user_id", userId)
+                    .addKeyValue("seats", requestedSeats).log();
+            throw e;
+        }
+    }
+
+    private ReserveOutcome doReserve(UUID showId, String userId, List<String> requestedSeats, String idempotencyKey) {
         Set<String> unique = new LinkedHashSet<>(requestedSeats);
         if (unique.size() != requestedSeats.size()) {
             throw ApiException.badRequest("duplicate seats in request");
@@ -105,7 +139,9 @@ public class ReservationService {
      * Someone else's reservation is reported as 404 — indistinguishable from a missing one, so ids can't be probed.
      */
     public Reservation cancel(UUID reservationId, String userId) {
-        return tx.execute(status -> {
+        record Result(Reservation reservation, boolean changed) {
+        }
+        Result result = tx.execute(status -> {
             Reservation found = reservations.findById(reservationId)
                     .filter(r -> r.userId().equals(userId))
                     .orElseThrow(() -> ApiException.notFound("reservation"));
@@ -113,7 +149,7 @@ public class ReservationService {
             reservations.lockUser(found.showId(), userId);
             Reservation current = reservations.lockReservation(reservationId);
             if (!"confirmed".equals(current.status())) {
-                return current; // already cancelled: no-op, same answer
+                return new Result(current, false); // already cancelled: no-op, same answer
             }
 
             reservations.lockSeats(current.showId(), current.seats().stream().sorted().toList());
@@ -124,9 +160,18 @@ public class ReservationService {
                         + " of " + current.seats().size() + " seats");
             }
             reservations.markCancelled(reservationId);
-            return new Reservation(current.reservationId(), current.showId(), current.userId(), current.seats(),
-                    current.amountPaise(), "cancelled");
+            return new Result(new Reservation(current.reservationId(), current.showId(), current.userId(),
+                    current.seats(), current.amountPaise(), "cancelled"), true);
         });
+        Reservation r = result.reservation();
+        if (result.changed()) {
+            metrics.cancelled(r.seats().size());
+        }
+        log.atInfo().setMessage("cancel")
+                .addKeyValue("outcome", result.changed() ? "cancelled" : "already-cancelled")
+                .addKeyValue("reservation_id", reservationId).addKeyValue("show_id", r.showId())
+                .addKeyValue("user_id", userId).addKeyValue("seats", r.seats()).log();
+        return r;
     }
 
     private static ReserveOutcome replay(StoredReservation stored, String requestHash) {
