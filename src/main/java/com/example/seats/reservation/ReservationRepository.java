@@ -2,6 +2,7 @@ package com.example.seats.reservation;
 
 import java.sql.Array;
 import java.sql.Connection;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.Arrays;
 import java.util.List;
@@ -47,14 +48,47 @@ public class ReservationRepository {
         return jdbc.query("""
                 SELECT id, show_id, user_id, seats, amount_paise, status, request_hash
                 FROM reservations WHERE user_id = ? AND idempotency_key = ?
-                """, (rs, i) -> new StoredReservation(new Reservation(
+                """, (rs, i) -> new StoredReservation(mapReservation(rs), rs.getString("request_hash")),
+                userId, idempotencyKey).stream().findFirst();
+    }
+
+    public Optional<Reservation> findById(UUID id) {
+        return jdbc.query("""
+                SELECT id, show_id, user_id, seats, amount_paise, status FROM reservations WHERE id = ?
+                """, (rs, i) -> mapReservation(rs), id).stream().findFirst();
+    }
+
+    /** Re-reads the reservation under a row lock so a concurrent cancel of the same reservation sees our result. */
+    public Reservation lockReservation(UUID id) {
+        return jdbc.queryForObject("""
+                SELECT id, show_id, user_id, seats, amount_paise, status FROM reservations WHERE id = ? FOR UPDATE
+                """, (rs, i) -> mapReservation(rs), id);
+    }
+
+    /**
+     * Releases only seats still owned by THIS reservation. If a seat was somehow re-sold, its reservation_id
+     * points elsewhere and this statement cannot touch it — a release can never resurrect someone else's seat.
+     */
+    public int releaseSeats(UUID showId, UUID reservationId) {
+        return jdbc.update("""
+                UPDATE seats SET status = 'available', reservation_id = NULL, user_id = NULL, updated_at = now()
+                WHERE show_id = ? AND reservation_id = ?
+                """, showId, reservationId);
+    }
+
+    public void markCancelled(UUID reservationId) {
+        jdbc.update("UPDATE reservations SET status = 'cancelled', cancelled_at = now() WHERE id = ? AND status = 'confirmed'",
+                reservationId);
+    }
+
+    private static Reservation mapReservation(ResultSet rs) throws SQLException {
+        return new Reservation(
                 rs.getObject("id", UUID.class),
                 rs.getObject("show_id", UUID.class),
                 rs.getString("user_id"),
                 Arrays.asList((String[]) rs.getArray("seats").getArray()),
                 rs.getLong("amount_paise"),
-                rs.getString("status")), rs.getString("request_hash")), userId, idempotencyKey)
-                .stream().findFirst();
+                rs.getString("status"));
     }
 
     /**

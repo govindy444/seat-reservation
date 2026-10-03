@@ -41,6 +41,11 @@ public class ReservationController {
                 .body(outcome.reservation());
     }
 
+    @PostMapping("/reservations/{reservationId}/cancel")
+    Reservation cancel(@PathVariable UUID reservationId, @AuthenticationPrincipal Jwt jwt) {
+        return service.cancel(reservationId, jwt.getSubject());
+    }
+
     private static String resolveKey(String header, String body) {
         if (header != null && body != null && !header.equals(body)) {
             throw ApiException.badRequest("Idempotency-Key header and idempotency_key body field differ");

@@ -100,6 +100,35 @@ public class ReservationService {
         }
     }
 
+    /**
+     * Owner-only, idempotent cancel. Same lock order as reserve: (show,user) lock, reservation row, seats by label.
+     * Someone else's reservation is reported as 404 — indistinguishable from a missing one, so ids can't be probed.
+     */
+    public Reservation cancel(UUID reservationId, String userId) {
+        return tx.execute(status -> {
+            Reservation found = reservations.findById(reservationId)
+                    .filter(r -> r.userId().equals(userId))
+                    .orElseThrow(() -> ApiException.notFound("reservation"));
+
+            reservations.lockUser(found.showId(), userId);
+            Reservation current = reservations.lockReservation(reservationId);
+            if (!"confirmed".equals(current.status())) {
+                return current; // already cancelled: no-op, same answer
+            }
+
+            reservations.lockSeats(current.showId(), current.seats().stream().sorted().toList());
+            int released = reservations.releaseSeats(current.showId(), reservationId);
+            if (released != current.seats().size()) {
+                // the seat rows disagree with the reservation; refuse rather than guess
+                throw new IllegalStateException("reservation " + reservationId + " owns " + released
+                        + " of " + current.seats().size() + " seats");
+            }
+            reservations.markCancelled(reservationId);
+            return new Reservation(current.reservationId(), current.showId(), current.userId(), current.seats(),
+                    current.amountPaise(), "cancelled");
+        });
+    }
+
     private static ReserveOutcome replay(StoredReservation stored, String requestHash) {
         if (!stored.requestHash().equals(requestHash)) {
             throw new ApiException(HttpStatus.CONFLICT, "idempotency_key_mismatch",
